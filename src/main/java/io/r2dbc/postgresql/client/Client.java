@@ -18,6 +18,7 @@ package io.r2dbc.postgresql.client;
 
 import io.netty.buffer.ByteBufAllocator;
 import io.r2dbc.postgresql.message.backend.BackendMessage;
+import io.r2dbc.postgresql.message.backend.NoticeResponse;
 import io.r2dbc.postgresql.message.backend.NotificationResponse;
 import io.r2dbc.postgresql.message.backend.ReadyForQuery;
 import io.r2dbc.postgresql.message.frontend.CancelRequest;
@@ -59,6 +60,28 @@ public interface Client {
      * @since 0.8.1
      */
     void addNotificationListener(Subscriber<NotificationResponse> consumer);
+
+    /**
+     * Add a consumer of notices. Notices received by this connection are sent to the {@link Consumer notice consumer}. Note that connection errors and events such as
+     * disconnects are not visible to the {@link Consumer notice consumer}.
+     *
+     * @param consumer the consumer of notices
+     * @return a new {@link Disposable} that can be used to cancel the underlying subscription
+     * @throws IllegalArgumentException if {@code consumer} is {@code null}
+     * @since 1.1.0
+     */
+    Disposable addNoticeListener(Consumer<NoticeResponse> consumer);
+
+    /**
+     * Add a consumer of notices. Notices received by this connection are sent to the {@link Subscriber notice listener}. When the client gets {@link #close() closed}, the
+     * subscription {@link Subscriber#onComplete() completes normally}. Otherwise (transport connection disconnected unintentionally) with an {@link R2dbcNonTransientResourceException error}.
+     *
+     * @param consumer the consumer of notices
+     * @return a new {@link Disposable} that can be used to cancel the underlying subscription
+     * @throws IllegalArgumentException if {@code consumer} is {@code null}
+     * @since 1.1.0
+     */
+    void addNoticeListener(Subscriber<NoticeResponse> consumer);
 
     /**
      * Release any resources held by the {@link Client}.

@@ -111,6 +111,15 @@ public interface PostgresqlConnection extends Connection {
     Flux<Notification> getNotifications();
 
     /**
+     * Return a {@link Flux} of {@link Notice} received from the connection. The stream is a hot stream producing messages as they are received. Notices received by this
+     * connection are published as they are received. When the client gets {@link #close() closed}, the subscription {@link Subscriber#onComplete() completes normally}. Otherwise (transport
+     * connection disconnected unintentionally) with an {@link R2dbcNonTransientResourceException error}.
+     *
+     * @return a hot {@link Flux} of {@link Notice Notices}
+     */
+    Flux<Notice> getNotices();
+
+    /**
      * Cancel currently running query by sending {@link CancelRequest} to a server.
      *
      * @return a {@link Mono} that indicates that a cancel frame was delivered to the backend

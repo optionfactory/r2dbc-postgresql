@@ -78,6 +78,11 @@ public final class MockPostgresqlConnection implements PostgresqlConnection {
     }
 
     @Override
+    public Flux<Notice> getNotices() {
+        return Flux.empty();
+    }
+
+    @Override
     public Mono<Void> cancelRequest() {
         return Mono.empty();
     }

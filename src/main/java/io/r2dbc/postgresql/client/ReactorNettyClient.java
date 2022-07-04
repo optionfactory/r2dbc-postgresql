@@ -112,6 +112,7 @@ public final class ReactorNettyClient implements Client {
     private final Sinks.Many<Publisher<FrontendMessage>> requestSink = Sinks.many().unicast().onBackpressureBuffer();
 
     private final Sinks.Many<NotificationResponse> notificationProcessor = Sinks.many().multicast().directBestEffort();
+    private final Sinks.Many<NoticeResponse> noticeProcessor = Sinks.many().multicast().directBestEffort();
 
     private final AtomicBoolean isClosed = new AtomicBoolean(false);
 
@@ -186,6 +187,7 @@ public final class ReactorNettyClient implements Client {
         return Mono.defer(() -> {
 
             this.notificationProcessor.tryEmitComplete();
+            this.noticeProcessor.tryEmitComplete();
 
             drainError(EXPECTED);
 
@@ -268,6 +270,8 @@ public final class ReactorNettyClient implements Client {
         }
 
         if (message.getClass() == NoticeResponse.class) {
+
+            this.noticeProcessor.tryEmitNext((NoticeResponse) message);
 
             this.settings.getNoticeLogLevel().log(logger, () -> this.context.getMessage(String.format("Notice: %s", toString(((NoticeResponse) message).getFields()))));
             return true;
@@ -442,6 +446,16 @@ public final class ReactorNettyClient implements Client {
     }
 
     @Override
+    public Disposable addNoticeListener(Consumer<NoticeResponse> consumer) {
+        return this.noticeProcessor.asFlux().subscribe(consumer);
+    }
+
+    @Override
+    public void addNoticeListener(Subscriber<NoticeResponse> consumer) {
+        this.noticeProcessor.asFlux().subscribe(consumer);
+    }
+
+    @Override
     public ByteBufAllocator getByteBufAllocator() {
         return this.byteBufAllocator;
     }
@@ -530,6 +544,7 @@ public final class ReactorNettyClient implements Client {
         this.messageSubscriber.close(supplier);
 
         this.notificationProcessor.tryEmitError(supplier.get());
+        this.noticeProcessor.tryEmitError(supplier.get());
     }
 
     private final class EnsureSubscribersCompleteChannelHandler extends ChannelDuplexHandler {

@@ -26,6 +26,8 @@ import io.r2dbc.postgresql.authentication.PasswordAuthenticationHandler;
 import io.r2dbc.postgresql.message.backend.BackendMessage;
 import io.r2dbc.postgresql.message.backend.CommandComplete;
 import io.r2dbc.postgresql.message.backend.DataRow;
+import io.r2dbc.postgresql.message.backend.Field.FieldType;
+import io.r2dbc.postgresql.message.backend.NoticeResponse;
 import io.r2dbc.postgresql.message.backend.NotificationResponse;
 import io.r2dbc.postgresql.message.backend.RowDescription;
 import io.r2dbc.postgresql.message.frontend.FrontendMessage;
@@ -801,6 +803,32 @@ final class ReactorNettyClientIntegrationTests {
 
         StepVerifier.create(sink.asFlux())
             .assertNext(message -> assertThat(message.getPayload()).isEqualTo("test"))
+            .thenCancel()
+            .verify();
+    }
+
+    @Test
+    void handleNotice() {
+        Sinks.Many<NoticeResponse> sink = Sinks.many().unicast().onBackpressureBuffer();
+        this.client.addNoticeListener(sink::tryEmitNext);
+
+        SERVER.getJdbcOperations().execute(
+                "CREATE OR REPLACE FUNCTION raise_info(text)"
+                + " RETURNS void AS $$"
+                + " BEGIN"
+                + "   RAISE INFO '%', $1;"
+                + " END;"
+                + " $$ LANGUAGE plpgsql;"
+        );
+
+        this.client
+            .exchange(Mono.just(new Query("SELECT raise_info('Test Message')")))
+            .blockLast();
+
+        io.r2dbc.postgresql.message.backend.Field expected = new io.r2dbc.postgresql.message.backend.Field(FieldType.MESSAGE, "Test Message");
+
+        StepVerifier.create(sink.asFlux())
+            .assertNext(message -> assertThat(message.getFields()).contains(expected))
             .thenCancel()
             .verify();
     }

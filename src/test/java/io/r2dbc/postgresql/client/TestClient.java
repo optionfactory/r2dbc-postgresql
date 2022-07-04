@@ -18,6 +18,7 @@ package io.r2dbc.postgresql.client;
 
 import io.netty.buffer.ByteBufAllocator;
 import io.r2dbc.postgresql.message.backend.BackendMessage;
+import io.r2dbc.postgresql.message.backend.NoticeResponse;
 import io.r2dbc.postgresql.message.backend.NotificationResponse;
 import io.r2dbc.postgresql.message.frontend.FrontendMessage;
 import io.r2dbc.postgresql.util.Assert;
@@ -52,6 +53,7 @@ public final class TestClient implements Client {
     private final boolean connected;
 
     private final Sinks.Many<NotificationResponse> notificationProcessor = Sinks.many().multicast().onBackpressureBuffer();
+    private final Sinks.Many<NoticeResponse> noticeProcessor = Sinks.many().multicast().onBackpressureBuffer();
 
     private final Integer processId;
 
@@ -183,8 +185,22 @@ public final class TestClient implements Client {
         this.notificationProcessor.asFlux().subscribe(consumer);
     }
 
+    @Override
+    public Disposable addNoticeListener(Consumer<NoticeResponse> consumer) {
+        return this.noticeProcessor.asFlux().subscribe(consumer);
+    }
+
+    @Override
+    public void addNoticeListener(Subscriber<NoticeResponse> consumer) {
+        this.noticeProcessor.asFlux().subscribe(consumer);
+    }
+
     public void notify(NotificationResponse notification) {
         this.notificationProcessor.tryEmitNext(notification);
+    }
+
+    public void notice(NoticeResponse notice) {
+        this.noticeProcessor.tryEmitNext(notice);
     }
 
     public static final class Builder {

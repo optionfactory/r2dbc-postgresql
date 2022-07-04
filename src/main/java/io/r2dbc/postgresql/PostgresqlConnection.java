@@ -18,6 +18,7 @@ package io.r2dbc.postgresql;
 
 import io.r2dbc.postgresql.api.CopyInBuilder;
 import io.r2dbc.postgresql.api.ErrorDetails;
+import io.r2dbc.postgresql.api.Notice;
 import io.r2dbc.postgresql.api.Notification;
 import io.r2dbc.postgresql.api.PostgresTransactionDefinition;
 import io.r2dbc.postgresql.api.PostgresqlResult;
@@ -31,6 +32,8 @@ import io.r2dbc.postgresql.codec.Codecs;
 import io.r2dbc.postgresql.message.backend.BackendMessage;
 import io.r2dbc.postgresql.message.backend.CommandComplete;
 import io.r2dbc.postgresql.message.backend.ErrorResponse;
+import io.r2dbc.postgresql.message.backend.Field;
+import io.r2dbc.postgresql.message.backend.NoticeResponse;
 import io.r2dbc.postgresql.message.backend.NotificationResponse;
 import io.r2dbc.postgresql.util.Assert;
 import io.r2dbc.postgresql.util.Operators;
@@ -53,11 +56,14 @@ import reactor.util.Loggers;
 import reactor.util.annotation.Nullable;
 
 import java.time.Duration;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import static io.r2dbc.postgresql.client.TransactionStatus.IDLE;
 import static io.r2dbc.postgresql.client.TransactionStatus.OPEN;
+import org.reactivestreams.Subscriber;
 
 /**
  * An implementation of {@link Connection} for connecting to a PostgreSQL database.
@@ -77,6 +83,8 @@ final class PostgresqlConnection implements io.r2dbc.postgresql.api.PostgresqlCo
     private final Flux<Long> validationQuery;
 
     private final AtomicReference<NotificationAdapter> notificationAdapter = new AtomicReference<>();
+
+    private final AtomicReference<NoticeAdapter> noticeAdapter = new AtomicReference<>();
 
     private volatile IsolationLevel isolationLevel;
 
@@ -181,6 +189,12 @@ final class PostgresqlConnection implements io.r2dbc.postgresql.api.PostgresqlCo
             if (notificationAdapter != null && this.notificationAdapter.compareAndSet(notificationAdapter, null)) {
                 notificationAdapter.dispose();
             }
+
+            NoticeAdapter noticeAdapter = this.noticeAdapter.get();
+
+            if (noticeAdapter != null && this.noticeAdapter.compareAndSet(noticeAdapter, null)) {
+                noticeAdapter.dispose();
+            }
         }).then(Mono.empty());
     }
 
@@ -280,6 +294,24 @@ final class PostgresqlConnection implements io.r2dbc.postgresql.api.PostgresqlCo
         }
 
         return notifications.getEvents();
+    }
+
+    @Override
+    public Flux<Notice> getNotices() {
+        NoticeAdapter notices = this.noticeAdapter.get();
+
+        if (notices == null) {
+
+            notices = new NoticeAdapter();
+
+            if (this.noticeAdapter.compareAndSet(null, notices)) {
+                notices.register(this.client);
+            } else {
+                notices = this.noticeAdapter.get();
+            }
+        }
+
+        return notices.getEvents();
     }
 
     @Override
@@ -486,11 +518,14 @@ final class PostgresqlConnection implements io.r2dbc.postgresql.api.PostgresqlCo
     }
 
     /**
-     * Adapter to publish {@link Notification}s.
+     * Generic adapter that maps {@link BackendMessage}s received by subscribing
+     * to a {@link Client}
+     * @param <T> the exposed message type
+     * @param <M> the source message type
      */
-    static class NotificationAdapter {
+    static abstract class BackendMessageAdapter<T, M extends BackendMessage> {
 
-        private final Sinks.Many<Notification> sink = Sinks.many().multicast().directBestEffort();
+        private final Sinks.Many<T> sink = Sinks.many().multicast().directBestEffort();
 
         @Nullable
         private volatile Disposable subscription = null;
@@ -502,9 +537,13 @@ final class PostgresqlConnection implements io.r2dbc.postgresql.api.PostgresqlCo
             }
         }
 
+        abstract T mapMessage(M message);
+
+        abstract void registerSubscriber(Client client, Subscriber<M> subscriber);
+
         void register(Client client) {
 
-            BaseSubscriber<NotificationResponse> subscriber = new BaseSubscriber<NotificationResponse>() {
+            BaseSubscriber<M> subscriber = new BaseSubscriber<M>() {
 
                 @Override
                 protected void hookOnSubscribe(Subscription subscription) {
@@ -512,29 +551,64 @@ final class PostgresqlConnection implements io.r2dbc.postgresql.api.PostgresqlCo
                 }
 
                 @Override
-                public void hookOnNext(NotificationResponse notificationResponse) {
-                    NotificationAdapter.this.sink.emitNext(new NotificationResponseWrapper(notificationResponse), Sinks.EmitFailureHandler.FAIL_FAST);
+                public void hookOnNext(M notificationResponse) {
+                    BackendMessageAdapter.this.sink.emitNext(mapMessage(notificationResponse), Sinks.EmitFailureHandler.FAIL_FAST);
                 }
 
                 @Override
                 public void hookOnError(Throwable throwable) {
-                    NotificationAdapter.this.sink.emitError(throwable, Sinks.EmitFailureHandler.FAIL_FAST);
+                    BackendMessageAdapter.this.sink.emitError(throwable, Sinks.EmitFailureHandler.FAIL_FAST);
                 }
 
                 @Override
                 public void hookOnComplete() {
-                    NotificationAdapter.this.sink.emitComplete(Sinks.EmitFailureHandler.FAIL_FAST);
+                    BackendMessageAdapter.this.sink.emitComplete(Sinks.EmitFailureHandler.FAIL_FAST);
                 }
             };
 
             this.subscription = subscriber;
-            client.addNotificationListener(subscriber);
+            registerSubscriber(client, subscriber);
         }
 
-        Flux<Notification> getEvents() {
+        Flux<T> getEvents() {
             return this.sink.asFlux();
         }
+    }
 
+    /**
+     * Adapter to publish {@link Notification}s.
+     */
+    static class NotificationAdapter extends BackendMessageAdapter<Notification, NotificationResponse> {
+
+        @Override
+        Notification mapMessage(NotificationResponse message) {
+            return new NotificationResponseWrapper(message);
+        }
+
+        @Override
+        void registerSubscriber(Client client, Subscriber<NotificationResponse> subscriber) {
+            client.addNotificationListener(subscriber);
+        }
+    }
+
+    /**
+     * Adapter to publish {@link Notice}s.
+     */
+    static class NoticeAdapter extends BackendMessageAdapter<Notice, NoticeResponse> {
+
+        @Override
+        Notice mapMessage(NoticeResponse message) {
+            final Notice notice = new Notice(new EnumMap<>(Field.FieldType.class));
+            for (Field field : message.getFields()) {
+                notice.fields.put(field.getType(), field.getValue());
+            }
+            return notice;
+        }
+
+        @Override
+        void registerSubscriber(Client client, Subscriber<NoticeResponse> subscriber) {
+            client.addNoticeListener(subscriber);
+        }
     }
 
     enum EmptyTransactionDefinition implements TransactionDefinition {
